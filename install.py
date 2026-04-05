@@ -93,10 +93,29 @@ def check_apktool():
 
 
 def install_jdk():
-    """Prompt to install JDK."""
+    """Attempt to install JDK automatically, or prompt manual installation."""
     print("\n[!] JDK is required for keytool and jarsigner.")
-    print("Please install JDK (Java Development Kit) from:")
-    print("  - Oracle JDK: https://www.oracle.com/java/technologies/javase-downloads.html")
+    
+    # Try to install with winget
+    try:
+        # Check if winget is available
+        subprocess.run(['winget', '--version'], capture_output=True, check=True, timeout=10)
+        print("[*] Attempting to install OpenJDK using winget...")
+        # Install silently
+        result = subprocess.run(['winget', 'install', 'Microsoft.OpenJDK.17', '--accept-source-agreements', '--accept-package-agreements', '--silent'], 
+                                capture_output=True, text=True, timeout=300)  # 5 min timeout
+        if result.returncode == 0:
+            print("[+] JDK installed successfully with winget.")
+            print("[!] Please restart your terminal or run the script again to update PATH.")
+            return True
+        else:
+            print("[-] winget install failed.")
+            print("Error:", result.stderr)
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        print("[-] winget not available or failed.")
+    
+    # Fallback to manual installation
+    print("Please install JDK manually from:")
     print("  - OpenJDK: https://adoptium.net/ (recommended)")
     print("Or use package manager:")
     print("  - Windows: winget install Microsoft.OpenJDK.17")
@@ -179,4 +198,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    check_jarsigner()
+    check_keytool()
+    check_apktool()
