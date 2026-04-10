@@ -33,6 +33,9 @@ A command-line tool for repacking Android APK files, featuring disassembly, rebu
 ### Steps
 
 1. Clone or download this repository.
+   ```bash
+   git clone https://github.com/tnduya3/RepackingAPK.git
+   ```
 
 2. Run the installation script to set up dependencies:
 
@@ -46,6 +49,11 @@ A command-line tool for repacking Android APK files, featuring disassembly, rebu
    - Verifies availability of keytool and jarsigner.
 
    If automatic installation fails, follow the on-screen prompts for manual setup.
+
+3. Install python requirements
+   ```bash
+   pip install -r requirements.txt
+  ```
 
 ## Usage
 
