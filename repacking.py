@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import shutil
+from multiprocessing import Pool, cpu_count
 
 
 def find_tool(name):
@@ -141,6 +142,74 @@ def _prompt_input_paths(single):
             return parts
 
 
+def process_single_input(inp, keystore, storepass, keypass, alias, out_dir, output, apktool_cmd, jarsigner_cmd, obfuscate=False, inject_mode='before_return', do_rename=True, rename_prefix='La/obf', rename_rename_files=False, rename_dryrun=False, helper_prefix=None):
+    if not os.path.exists(inp):
+        print('[-] Input not found: {}'.format(inp))
+        return
+
+    # determine project dir
+    if os.path.isdir(inp):
+        project_dir = inp
+        print('[*] Using directory input: {}'.format(project_dir))
+    else:
+        if not inp.endswith('.apk'):
+            print('[-] Skipping unknown input type: {}'.format(inp))
+            return
+        project_dir = inp[:-4] + '_out'
+        if os.path.isdir(project_dir):
+            print('[*] Found existing directory {}, skipping disassemble.'.format(project_dir))
+        else:
+            print('[*] Disassembling {} -> {}'.format(inp, project_dir))
+            if not apktool_disassemble(apktool_cmd, inp, project_dir):
+                print('[-] Failed to disassemble {}; skipping.'.format(inp))
+                return
+
+    # obfuscation
+    if obfuscate:
+        print('[*] Running obfuscation steps...')
+        ok = run_obfuscation_commands(project_dir, inject_mode=inject_mode, do_rename=do_rename, rename_prefix=rename_prefix, rename_rename_files=rename_rename_files, rename_dryrun=rename_dryrun, helper_prefix=helper_prefix)
+        if not ok:
+            print('[-] Obfuscation steps reported failures; continuing to build anyway.')
+
+    # build
+    print('[*] Building project {}...'.format(project_dir))
+    if not apktool_build(apktool_cmd, project_dir):
+        print('[-] apktool build failed for {}; skipping.'.format(project_dir))
+        return
+
+    unsigned_apk = find_built_apk(project_dir)
+    if not unsigned_apk:
+        print('[-] Could not find built APK in {}/dist'.format(project_dir))
+        return
+    print('[*] Built APK: {}'.format(unsigned_apk))
+
+    # determine output path
+    multiple = out_dir is not None
+    if multiple:
+        # normalize path first to handle trailing slashes so basename() returns the expected name
+        base = os.path.splitext(os.path.basename(os.path.normpath(inp)))[0]
+        final_out = os.path.join(out_dir, base + '-signed.apk')
+        # avoid overwriting files when multiple inputs produce the same base name
+        if os.path.exists(final_out):
+            i = 1
+            while True:
+                candidate = os.path.join(out_dir, f"{base}-signed-{i}.apk")
+                if not os.path.exists(candidate):
+                    final_out = candidate
+                    break
+                i += 1
+    else:
+        final_out = output
+
+    # sign
+    print('[*] Signing {} -> {}'.format(unsigned_apk, final_out))
+    if not jarsigner_sign(jarsigner_cmd, keystore, storepass, keypass, alias, unsigned_apk, final_out):
+        print('[-] Signing failed for {}; skipping.'.format(unsigned_apk))
+        return
+
+    print('[+] Done: {}'.format(final_out))
+
+
 def main():
     import shlex
     import getpass
@@ -278,50 +347,52 @@ def main():
             print('[-] Output directory not specified for multiple inputs.')
             sys.exit(1)
 
-    for inp in inputs:
-        if not os.path.exists(inp):
-            print('[-] Input not found: {}'.format(inp))
-            continue
-
-        # determine project dir
-        if os.path.isdir(inp):
-            project_dir = inp
-            print('[*] Using directory input: {}'.format(project_dir))
-        else:
-            if not inp.endswith('.apk'):
-                print('[-] Skipping unknown input type: {}'.format(inp))
-                continue
-            project_dir = inp[:-4] + '_out'
-            if os.path.isdir(project_dir):
-                print('[*] Found existing directory {}, skipping disassemble.'.format(project_dir))
-            else:
-                print('[*] Disassembling {} -> {}'.format(inp, project_dir))
-                if not apktool_disassemble(apktool_cmd, inp, project_dir):
-                    print('[-] Failed to disassemble {}; skipping.'.format(inp))
-                    continue
-
-        # optional pre-build obfuscation
+    # set obfuscation options (only in interactive mode)
+    obfuscate = False
+    inject_mode = 'before_return'
+    do_rename = True
+    rename_prefix = 'La/obf'
+    rename_rename_files = False
+    rename_dryrun = False
+    helper_prefix = None
+    if len(sys.argv) == 1:  # interactive
         try:
             ans = input('Run obfuscation steps before build? [y/N]: \n').strip().lower()
-        except Exception:
+        except (EOFError, KeyboardInterrupt):
             ans = 'n'
         if ans.startswith('y'):
-            mode = input('Inject mode (before_return/simple_call) [before_return]: \n').strip() or 'before_return'
+            try:
+                mode = input('Inject mode (before_return/simple_call) [before_return]: \n').strip() or 'before_return'
+            except (EOFError, KeyboardInterrupt):
+                mode = 'before_return'
+            inject_mode = mode
 
             # prompt for class rename options
             try:
                 rn = input('Run class rename? [Y/n]: \n').strip().lower()
-            except Exception:
+            except (EOFError, KeyboardInterrupt):
                 rn = 'y'
             if rn == '' or rn.startswith('y'):
-                prefix = input('Class rename prefix (default: La/obf): \n').strip() or 'La/obf'
-                rf = input('Rename class files on disk? [y/N]: \n').strip().lower()
+                try:
+                    prefix = input('Class rename prefix (default: La/obf): \n').strip() or 'La/obf'
+                except (EOFError, KeyboardInterrupt):
+                    prefix = 'La/obf'
+                try:
+                    rf = input('Rename class files on disk? [y/N]: \n').strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    rf = 'n'
                 rename_files_flag = rf.startswith('y')
-                dr = input('Dry-run rename only? [y/N]: \n').strip().lower()
+                try:
+                    dr = input('Dry-run rename only? [y/N]: \n').strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    dr = 'n'
                 rename_dryrun = dr.startswith('y')
                 # derive helper prefix and optionally override
                 helper_default = prefix.lstrip('L').strip('/') + '/junk'
-                hp = input(f'Helper prefix (default: {helper_default}): \n').strip()
+                try:
+                    hp = input(f'Helper prefix (default: {helper_default}): \n').strip()
+                except (EOFError, KeyboardInterrupt):
+                    hp = ''
                 helper_prefix = hp or helper_default
                 do_rename = True
             else:
@@ -330,48 +401,15 @@ def main():
                 rename_files_flag = False
                 rename_dryrun = False
                 helper_prefix = None
+            rename_prefix = prefix
+            rename_rename_files = rename_files_flag
+            obfuscate = True
 
-            print('[*] Running obfuscation steps...')
-            ok = run_obfuscation_commands(project_dir, inject_mode=mode, do_rename=do_rename, rename_prefix=prefix, rename_rename_files=rename_files_flag, rename_dryrun=rename_dryrun, helper_prefix=helper_prefix)
-            if not ok:
-                print('[-] Obfuscation steps reported failures; continuing to build anyway.')
-
-        # build
-        print('[*] Building project {}...'.format(project_dir))
-        if not apktool_build(apktool_cmd, project_dir):
-            print('[-] apktool build failed for {}; skipping.'.format(project_dir))
-            continue
-
-        unsigned_apk = find_built_apk(project_dir)
-        if not unsigned_apk:
-            print('[-] Could not find built APK in {}/dist'.format(project_dir))
-            continue
-        print('[*] Built APK: {}'.format(unsigned_apk))
-
-        # determine output path
-        if multiple or ( 'out_dir' in locals() and out_dir ):
-            # normalize path first to handle trailing slashes so basename() returns the expected name
-            base = os.path.splitext(os.path.basename(os.path.normpath(inp)))[0]
-            final_out = os.path.join(out_dir, base + '-signed.apk')
-            # avoid overwriting files when multiple inputs produce the same base name
-            if os.path.exists(final_out):
-                i = 1
-                while True:
-                    candidate = os.path.join(out_dir, f"{base}-signed-{i}.apk")
-                    if not os.path.exists(candidate):
-                        final_out = candidate
-                        break
-                    i += 1
-        else:
-            final_out = output
-
-        # sign
-        print('[*] Signing {} -> {}'.format(unsigned_apk, final_out))
-        if not jarsigner_sign(jarsigner_cmd, keystore, storepass, keypass, alias, unsigned_apk, final_out):
-            print('[-] Signing failed for {}; skipping.'.format(unsigned_apk))
-            continue
-
-        print('[+] Done: {}'.format(final_out))
+    if len(inputs) == 1:
+        process_single_input(inputs[0], keystore, storepass, keypass, alias, out_dir, output, apktool_cmd, jarsigner_cmd, obfuscate, inject_mode, do_rename, rename_prefix, rename_rename_files, rename_dryrun, helper_prefix)
+    else:
+        with Pool(processes=min(len(inputs), cpu_count())) as pool:
+            pool.starmap(process_single_input, [(inp, keystore, storepass, keypass, alias, out_dir, output, apktool_cmd, jarsigner_cmd, obfuscate, inject_mode, do_rename, rename_prefix, rename_rename_files, rename_dryrun, helper_prefix) for inp in inputs])
 
 
 if __name__ == '__main__':
