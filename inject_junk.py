@@ -2,6 +2,10 @@ from pathlib import Path
 import argparse
 import shutil
 import os
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
 
 
 def find_smali_dir(root: Path) -> Path:
@@ -58,7 +62,8 @@ def inject(smali_root: Path, helper_prefix: str, helper_class: str, count: int, 
     helper_ref = f"L{pkg}/{helper_class};"
     smali_files = list(smali_root.rglob('*.smali'))
     total = 0
-    for sf in smali_files:
+    iterator = tqdm(smali_files, desc="[Injecting junk]") if tqdm else smali_files
+    for sf in iterator:
         sfn = str(sf).replace('\\', '/')
         if helper_ref in sfn or sf.name == f"{helper_class}.smali":
             continue

@@ -2,6 +2,10 @@ import argparse
 import os
 import re
 from pathlib import Path
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
 
 CLASS_DECL_RE = re.compile(r"^\s*\.class\b.*\b(L[^;]+;)")
 
@@ -173,7 +177,8 @@ def main():
 
     # replace references
     replaced_files = 0
-    for f in files:
+    iterator = tqdm(files, desc="[Replacing references]") if tqdm else files
+    for f in iterator:
         if replace_in_file(f, mapping):
             replaced_files += 1
     print(f"Updated {replaced_files} files with new class names.")
@@ -181,7 +186,8 @@ def main():
     # rename files if requested
     moved = 0
     if args.rename_files:
-        moved = rename_files(files, mapping, root)
+        iterator2 = tqdm(files, desc="[Renaming files]") if tqdm else files
+        moved = rename_files(iterator2, mapping, root)
         print(f"Moved {moved} .smali files to match obfuscated class paths.")
 
     write_mapping(mapping, args.out_mapping)
